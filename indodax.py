@@ -20,13 +20,13 @@ import hashlib
 import json
 from datetime import datetime
 
-# ================= KONFIGURASI =================
+# ================= CONFIGURATION =================
 API_KEY = "FILL API KEY HERE"
 SECRET_KEY = "FILL SECRET KEY HERE"
 BASE_URL = "https://indodax.com/api"
 
 PAIR = "btcidr"
-INTERVAL = 10  # Cek setiap 5 menit
+INTERVAL = 10  # Checks every 10 seconds
 BELI_DI_BAWAH = 95000000
 JUAL_DI_ATAS = 105000000
 # ===============================================
