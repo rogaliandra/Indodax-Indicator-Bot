@@ -29,10 +29,31 @@ import sdl2.ext
 API_KEY = "FILL API KEY HERE"
 SECRET_KEY = "FILL SECRET KEY HERE"
 BASE_URL = "https://indodax.com/api"
-INTERVAL = 60  # detik — update tiap 15 detik
-CHART_PAIR = "btcidr"  # Pasangan yang ditampilkan di grafik
-MAX_DATA_POINTS = 60   # Maksimal titik di grafik
+BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
+INTERVAL = 15  # detik — update tiap 15 detik
+CHART_PAIR = "btcidr"
+MAX_DATA_POINTS = 60
+RATE_LIMIT = 180  # requests per menit — batas Indodax
+REQUEST_LOG = []  # catat waktu request untuk hitung rate
 
+# Mapping pasangan ke Binance
+BINANCE_PAIRS = {
+    "btcidr":   "BTCUSDT",
+    "xrpidr":   "XRPUSDT",
+    "nearidr":  "NEARUSDT",
+    "usdtidr":  "USDTUSDT",
+    "usdcidr":  "USDCUSDT",
+    "ethidr":   "ETHUSDT",
+    "solidr":   "SOLUSDT",
+    "suiidr":   "SUIUSDT",
+    "pepeidr":  "PEPEUSDT",
+    "tronidr":  "TRXUSDT",
+}
+
+# Estimasi kurs USDT-IDR untuk konversi dari Binance
+USDT_RATE = 16100
+
+# 10 Pasangan Dipantau
 PAIRS = {
     "btcidr":   {"nama": "BTC/IDR",  "beli": 95000000, "jual": 105000000},
     "xrpidr":   {"nama": "XRP/IDR",  "beli": 6000,     "jual": 7500},
@@ -41,12 +62,16 @@ PAIRS = {
     "usdcidr":  {"nama": "USDC/IDR", "beli": 16000,    "jual": 16500},
     "ethidr":   {"nama": "ETH/IDR",  "beli": 4500000, "jual": 5500000},
     "solidr":   {"nama": "SOL/IDR",  "beli": 80000,   "jual": 110000},
+    "suiidr":   {"nama": "SUI/IDR",  "beli": 2800,    "jual": 4000},
+    "pepeidr":  {"nama": "PEPE/IDR", "beli": 0.35,    "jual": 0.60},
+    "tronidr":  {"nama": "TRON/IDR", "beli": 260,     "jual": 350},
 }
 # ===============================================
 
 # Data untuk grafik
 price_history = []
 time_history = []
+FALLBACK_MODE = False
 
 # SDL2 Constants
 WIDTH, HEIGHT = 900, 550
@@ -55,13 +80,75 @@ MARGIN_TOP, MARGIN_BOTTOM = 50, 60
 CHART_W = WIDTH - MARGIN_LEFT - MARGIN_RIGHT
 CHART_H = HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
 
-def ambil_harga(pair):
+# ============== RATE LIMIT CHECK ==============
+
+def cek_rate_limit():
+    global REQUEST_LOG
+    sekarang = time.time()
+    REQUEST_LOG = [t for t in REQUEST_LOG if sekarang - t < 60]
+    jumlah = len(REQUEST_LOG)
+    if jumlah >= RATE_LIMIT - 10:
+        print(f"⚠️  PERINGATAN: {jumlah}/{RATE_LIMIT} request — mendekati batas!")
+    return jumlah < RATE_LIMIT - 5
+
+def catat_request():
+    global REQUEST_LOG
+    REQUEST_LOG.append(time.time())
+
+# ============== AMBIL HARGA — FALLBACK SYSTEM ==============
+
+def ambil_harga_indodax(pair):
     try:
+        if not cek_rate_limit():
+            return None, "RATE_LIMIT"
         res = requests.get(f"{BASE_URL}/ticker/{pair}", timeout=10)
-        return float(res.json()["ticker"]["last"])
+        catat_request()
+        if res.status_code == 429:
+            return None, "RATE_LIMIT"
+        data = res.json()
+        return float(data["ticker"]["last"]), None
     except Exception as e:
-        print(f"❌ {pair}: {e}")
+        print(f"❌ Indodax Error {pair}: {e}")
+        return None, "ERROR"
+
+def ambil_harga_binance(pair):
+    try:
+        bn_pair = BINANCE_PAIRS.get(pair)
+        if not bn_pair:
+            return None
+        res = requests.get(f"{BINANCE_URL}?symbol={bn_pair}", timeout=10)
+        data = res.json()
+        harga_usdt = float(data["price"])
+        return harga_usdt * USDT_RATE
+    except Exception as e:
+        print(f"❌ Binance Error: {e}")
         return None
+
+def ambil_harga(pair):
+    global FALLBACK_MODE, USDT_RATE
+    
+    if pair == "usdtidr" and not FALLBACK_MODE:
+        h, err = ambil_harga_indodax(pair)
+        if h:
+            USDT_RATE = h
+    
+    harga, err = ambil_harga_indodax(pair)
+    
+    if err == "RATE_LIMIT" or harga is None:
+        if not FALLBACK_MODE:
+            print("\n" + "="*60)
+            print("⚠️  INDODAX RATE LIMIT TERCAPAI — SWITCH KE BINANCE")
+            print("="*60)
+            FALLBACK_MODE = True
+        return ambil_harga_binance(pair)
+    
+    if FALLBACK_MODE and err is None and harga:
+        print("\n✅ Indodax kembali normal — keluar dari mode fallback")
+        FALLBACK_MODE = False
+    
+    return harga
+
+# ============== FUNGSI PEMBANTU ==============
 
 def format_harga(angka):
     if angka >= 1000000:
@@ -154,8 +241,8 @@ def update_chart(renderer, harga, beli, jual):
             )
     
     sinyal = cek_sinyal(harga, beli, jual)
-    info_text = f"{PAIRS[CHART_PAIR]['nama']} | Terbaru: {format_harga(harga)} | {sinyal}"
-    print(f"\n📊 {info_text}")
+    mode = "🔄 FALLBACK (Binance)" if FALLBACK_MODE else "✅ Indodax"
+    print(f"📊 {PAIRS[CHART_PAIR]['nama']} | {mode} | Terbaru: {format_harga(harga)} | {sinyal}")
     
     renderer.present()
 
@@ -163,9 +250,9 @@ def update_chart(renderer, harga, beli, jual):
 
 def main():
     print("=" * 65)
-    print("🤖 INDOdAX BOT + SDL2 LIVE CHART")
+    print("🤖 INDOdAX BOT + SDL2 LIVE CHART + BINANCE FALLBACK")
     print(f"📊 Memantau {len(PAIRS)} pasangan — Update tiap {INTERVAL} detik")
-    print(f"📈 Grafik: {PAIRS[CHART_PAIR]['nama']}")
+    print(f"📈 Total request: ~40/menit (dari batas 180/menit)")
     print("=" * 65)
     
     window, renderer = init_sdl2()
@@ -184,6 +271,8 @@ def main():
             if now - last_update >= INTERVAL:
                 last_update = now
                 print(f"\n🕒 {waktu_sekarang()}")
+                mode_label = "🔄 [FALLBACK: Binance]" if FALLBACK_MODE else "✅ [Indodax]"
+                print(f"📡 Sumber Data: {mode_label}")
                 print(f"{'Pasangan':<12} {'Harga':>18} {'Sinyal':<10}")
                 print("-" * 45)
                 
@@ -211,4 +300,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
