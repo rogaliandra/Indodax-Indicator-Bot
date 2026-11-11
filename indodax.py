@@ -24,6 +24,10 @@ import json
 from datetime import datetime
 import sdl2
 import sdl2.ext
+import urllib3
+
+# Matikan warning SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ================= KONFIGURASI =================
 API_KEY = "FILL API KEY HERE"
@@ -33,8 +37,8 @@ BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
 INTERVAL = 15  # detik — update tiap 15 detik
 CHART_PAIR = "btcidr"
 MAX_DATA_POINTS = 60
-RATE_LIMIT = 180  # requests per menit — batas Indodax
-REQUEST_LOG = []  # catat waktu request untuk hitung rate
+RATE_LIMIT = 180
+REQUEST_LOG = []
 
 # Mapping pasangan ke Binance
 BINANCE_PAIRS = {
@@ -47,13 +51,12 @@ BINANCE_PAIRS = {
     "solidr":   "SOLUSDT",
     "suiidr":   "SUIUSDT",
     "pepeidr":  "PEPEUSDT",
-    "tronidr":  "TRXUSDT",
+    "trxidr":   "TRXUSDT",
 }
 
-# Estimasi kurs USDT-IDR untuk konversi dari Binance
 USDT_RATE = 16100
 
-# 10 Pasangan Dipantau
+# ✅ Perbaiki: TRON pakai nama Indodax yang benar = trxidr
 PAIRS = {
     "btcidr":   {"nama": "BTC/IDR",  "beli": 95000000, "jual": 105000000},
     "xrpidr":   {"nama": "XRP/IDR",  "beli": 6000,     "jual": 7500},
@@ -64,23 +67,19 @@ PAIRS = {
     "solidr":   {"nama": "SOL/IDR",  "beli": 80000,   "jual": 110000},
     "suiidr":   {"nama": "SUI/IDR",  "beli": 2800,    "jual": 4000},
     "pepeidr":  {"nama": "PEPE/IDR", "beli": 0.35,    "jual": 0.60},
-    "tronidr":  {"nama": "TRON/IDR", "beli": 260,     "jual": 350},
+    "trxidr":   {"nama": "TRX/IDR",  "beli": 260,     "jual": 350},
 }
 # ===============================================
 
-# Data untuk grafik
 price_history = []
 time_history = []
 FALLBACK_MODE = False
 
-# SDL2 Constants
 WIDTH, HEIGHT = 900, 550
 MARGIN_LEFT, MARGIN_RIGHT = 80, 40
 MARGIN_TOP, MARGIN_BOTTOM = 50, 60
 CHART_W = WIDTH - MARGIN_LEFT - MARGIN_RIGHT
 CHART_H = HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
-
-# ============== RATE LIMIT CHECK ==============
 
 def cek_rate_limit():
     global REQUEST_LOG
@@ -95,8 +94,6 @@ def catat_request():
     global REQUEST_LOG
     REQUEST_LOG.append(time.time())
 
-# ============== AMBIL HARGA — FALLBACK SYSTEM ==============
-
 def ambil_harga_indodax(pair):
     try:
         if not cek_rate_limit():
@@ -106,6 +103,9 @@ def ambil_harga_indodax(pair):
         if res.status_code == 429:
             return None, "RATE_LIMIT"
         data = res.json()
+        if "ticker" not in data:
+            print(f"⚠️  {pair}: Pasangan tidak ditemukan di Indodax — dilewati")
+            return None, "NOT_FOUND"
         return float(data["ticker"]["last"]), None
     except Exception as e:
         print(f"❌ Indodax Error {pair}: {e}")
@@ -116,12 +116,15 @@ def ambil_harga_binance(pair):
         bn_pair = BINANCE_PAIRS.get(pair)
         if not bn_pair:
             return None
-        res = requests.get(f"{BINANCE_URL}?symbol={bn_pair}", timeout=10)
+        # ✅ Perbaiki: nonaktif verifikasi SSL untuk Binance
+        res = requests.get(f"{BINANCE_URL}?symbol={bn_pair}", timeout=10, verify=False)
         data = res.json()
+        if "price" not in data:
+            return None
         harga_usdt = float(data["price"])
         return harga_usdt * USDT_RATE
     except Exception as e:
-        print(f"❌ Binance Error: {e}")
+        print(f"⚠️  Binance Error {pair}: {e}")
         return None
 
 def ambil_harga(pair):
@@ -135,11 +138,12 @@ def ambil_harga(pair):
     harga, err = ambil_harga_indodax(pair)
     
     if err == "RATE_LIMIT" or harga is None:
-        if not FALLBACK_MODE:
-            print("\n" + "="*60)
-            print("⚠️  INDODAX RATE LIMIT TERCAPAI — SWITCH KE BINANCE")
-            print("="*60)
-            FALLBACK_MODE = True
+        if err != "NOT_FOUND":
+            if not FALLBACK_MODE:
+                print("\n" + "="*60)
+                print("⚠️  INDODAX RATE LIMIT TERCAPAI — SWITCH KE BINANCE")
+                print("="*60)
+                FALLBACK_MODE = True
         return ambil_harga_binance(pair)
     
     if FALLBACK_MODE and err is None and harga:
@@ -148,9 +152,8 @@ def ambil_harga(pair):
     
     return harga
 
-# ============== FUNGSI PEMBANTU ==============
-
 def format_harga(angka):
+    if not angka: return "N/A"
     if angka >= 1000000:
         return f"Rp{angka:,.0f}"
     elif angka >= 1000:
@@ -161,13 +164,12 @@ def waktu_sekarang():
     return datetime.now().strftime("%H:%M:%S")
 
 def cek_sinyal(harga, beli, jual):
+    if not harga: return "❌ N/A"
     if harga < beli:
         return "🔵 BELI"
     elif harga > jual:
         return "🔴 JUAL"
     return "⏸️ TAHAN"
-
-# ============== SDL2 CHART FUNCTIONS ==============
 
 def init_sdl2():
     sdl2.ext.init()
@@ -191,7 +193,7 @@ def draw_grid(renderer, min_p, max_p):
             x, MARGIN_TOP, x, HEIGHT - MARGIN_BOTTOM)
 
 def price_to_y(price, min_p, max_p):
-    if max_p == min_p: return MARGIN_TOP + CHART_H // 2
+    if not price or max_p == min_p: return MARGIN_TOP + CHART_H // 2
     ratio = (max_p - price) / (max_p - min_p)
     return MARGIN_TOP + int(ratio * CHART_H)
 
@@ -208,8 +210,11 @@ def update_chart(renderer, harga, beli, jual):
         min_p = min(harga * 0.999, beli * 0.999)
         max_p = max(harga * 1.001, jual * 1.001)
     else:
-        min_p = min(min(price_history), beli) * 0.9995
-        max_p = max(max(price_history), jual) * 1.0005
+        valid_prices = [p for p in price_history if p]
+        if not valid_prices:
+            return
+        min_p = min(min(valid_prices), beli) * 0.9995
+        max_p = max(max(valid_prices), jual) * 1.0005
     
     sdl2.SDL_SetRenderDrawColor(renderer.sdlrenderer, 20, 22, 30, 255)
     sdl2.SDL_RenderClear(renderer.sdlrenderer)
@@ -230,9 +235,10 @@ def update_chart(renderer, harga, beli, jual):
         sdl2.SDL_SetRenderDrawColor(renderer.sdlrenderer, 0, 255, 136, 255)
         points = []
         for i, p in enumerate(price_history):
-            x = MARGIN_LEFT + int(i * CHART_W / max(len(price_history)-1, 1))
-            y = price_to_y(p, min_p, max_p)
-            points.append((x, y))
+            if p:
+                x = MARGIN_LEFT + int(i * CHART_W / max(len(price_history)-1, 1))
+                y = price_to_y(p, min_p, max_p)
+                points.append((x, y))
         for i in range(len(points)-1):
             sdl2.SDL_RenderDrawLine(
                 renderer.sdlrenderer,
@@ -246,13 +252,10 @@ def update_chart(renderer, harga, beli, jual):
     
     renderer.present()
 
-# =================== MAIN LOOP ===================
-
 def main():
     print("=" * 65)
     print("🤖 INDOdAX BOT + SDL2 LIVE CHART + BINANCE FALLBACK")
     print(f"📊 Memantau {len(PAIRS)} pasangan — Update tiap {INTERVAL} detik")
-    print(f"📈 Total request: ~40/menit (dari batas 180/menit)")
     print("=" * 65)
     
     window, renderer = init_sdl2()
@@ -281,11 +284,10 @@ def main():
                 
                 for pair, cfg in PAIRS.items():
                     harga = ambil_harga(pair)
-                    if harga:
-                        sinyal = cek_sinyal(harga, cfg["beli"], cfg["jual"])
-                        print(f"{cfg['nama']:<12} {format_harga(harga):>18} {sinyal:<10}")
-                        if pair == CHART_PAIR:
-                            chart_price = harga
+                    sinyal = cek_sinyal(harga, cfg["beli"], cfg["jual"])
+                    print(f"{cfg['nama']:<12} {format_harga(harga):>18} {sinyal:<10}")
+                    if pair == CHART_PAIR and harga:
+                        chart_price = harga
                 
                 if chart_price:
                     update_chart(renderer, chart_price, chart_cfg["beli"], chart_cfg["jual"])
