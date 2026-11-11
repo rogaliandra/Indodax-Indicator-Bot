@@ -29,7 +29,7 @@ import sdl2.ext
 API_KEY = "FILL API KEY HERE"
 SECRET_KEY = "FILL SECRET KEY HERE"
 BASE_URL = "https://indodax.com/api"
-INTERVAL = 60  # detik — update tiap 1 menit
+INTERVAL = 15  # detik — update tiap 15 detik
 CHART_PAIR = "btcidr"  # Pasangan yang ditampilkan di grafik
 MAX_DATA_POINTS = 60   # Maksimal titik di grafik
 
